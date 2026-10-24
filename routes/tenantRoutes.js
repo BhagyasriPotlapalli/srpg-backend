@@ -1,0 +1,17 @@
+import express from "express";
+import {
+  getTenants,
+  getFilterOptions,
+  updateTenant,
+} from "../controllers/tenantController.js";
+import { authenticateAdmin } from "../middleware/auth.js";
+
+const router = express.Router();
+
+router.use(authenticateAdmin);
+
+router.get("/filter-options", getFilterOptions);
+router.get("/", getTenants);
+router.put("/:id", updateTenant);
+
+export default router;
