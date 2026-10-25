@@ -76,7 +76,7 @@ export const getTenants = async (req, res, next) => {
         select: "roomNumber floorId",
         populate: {
           path: "floorId",
-          select: "name",
+          select: "name floorNumber",
         },
       })
       .populate("bedId", "bedNumber")
@@ -163,6 +163,7 @@ export const getTenants = async (req, res, next) => {
           ? {
               id: floor._id.toString(),
               name: floor.name,
+              floorNumber: floor.floorNumber,
             }
           : null,
         bed: bed
@@ -365,30 +366,38 @@ export const updateTenant = async (req, res, next) => {
       tenant.roomId = room._id;
     }
 
-    // Update status
-    if (tenantStatus && ["Active", "CheckedOut"].includes(tenantStatus)) {
-      if (tenantStatus === "CheckedOut" && tenant.tenantStatus !== "CheckedOut") {
-        // Release bed
+    // Update status or checkout
+    const isCheckingOut = tenantStatus === "CheckedOut" || (checkoutDate && tenantStatus !== "Active");
+    const isActivating = tenantStatus === "Active" && tenant.tenantStatus === "CheckedOut";
+
+    if (isCheckingOut) {
+      // Release assigned bed
+      if (tenant.bedId) {
         await Bed.findByIdAndUpdate(tenant.bedId, {
           status: "Available",
           tenantId: null,
         });
-        tenant.tenantStatus = "CheckedOut";
-        tenant.checkoutDate = checkoutDate || getTodayDateString();
-      } else if (tenantStatus === "Active" && tenant.tenantStatus === "CheckedOut") {
-        // Check if bed is available
-        const currentBed = await Bed.findById(tenant.bedId);
-        if (currentBed && currentBed.status === "Occupied" && currentBed.tenantId?.toString() !== tenant._id.toString()) {
-          return errorResponse(res, 409, "Selected bed is already occupied");
-        }
-        if (currentBed) {
-          currentBed.status = "Occupied";
-          currentBed.tenantId = tenant._id;
-          await currentBed.save();
-        }
-        tenant.tenantStatus = "Active";
-        tenant.checkoutDate = null;
       }
+      // Release any other bed pointing to this tenant
+      await Bed.updateMany(
+        { tenantId: tenant._id },
+        { status: "Available", tenantId: null }
+      );
+      tenant.tenantStatus = "CheckedOut";
+      tenant.checkoutDate = checkoutDate || tenant.checkoutDate || getTodayDateString();
+    } else if (isActivating) {
+      // Check if bed is available before reactivating
+      const currentBed = await Bed.findById(tenant.bedId);
+      if (currentBed && currentBed.status === "Occupied" && currentBed.tenantId?.toString() !== tenant._id.toString()) {
+        return errorResponse(res, 409, "Selected bed is already occupied");
+      }
+      if (currentBed) {
+        currentBed.status = "Occupied";
+        currentBed.tenantId = tenant._id;
+        await currentBed.save();
+      }
+      tenant.tenantStatus = "Active";
+      tenant.checkoutDate = null;
     }
 
     if (checkoutDate !== undefined) tenant.checkoutDate = checkoutDate;
@@ -420,6 +429,33 @@ export const updateTenant = async (req, res, next) => {
       tenantStatus: tenant.tenantStatus,
       updatedAt: tenant.updatedAt,
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * DELETE /api/tenants/:id
+ * Delete tenant and free up assigned bed
+ */
+export const deleteTenant = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const tenant = await Tenant.findById(id);
+    if (!tenant) {
+      return errorResponse(res, 404, 'Tenant not found');
+    }
+
+    if (tenant.bedId) {
+      await Bed.findByIdAndUpdate(tenant.bedId, {
+        status: 'Available',
+        tenantId: null,
+      });
+    }
+
+    await Tenant.findByIdAndDelete(id);
+
+    return successResponse(res, 200, 'Tenant deleted successfully', { id });
   } catch (error) {
     next(error);
   }

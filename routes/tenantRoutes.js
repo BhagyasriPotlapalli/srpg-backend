@@ -3,6 +3,7 @@ import {
   getTenants,
   getFilterOptions,
   updateTenant,
+  deleteTenant,
 } from "../controllers/tenantController.js";
 import { authenticateAdmin } from "../middleware/auth.js";
 
@@ -13,5 +14,6 @@ router.use(authenticateAdmin);
 router.get("/filter-options", getFilterOptions);
 router.get("/", getTenants);
 router.put("/:id", updateTenant);
+router.delete("/:id", deleteTenant);
 
 export default router;
