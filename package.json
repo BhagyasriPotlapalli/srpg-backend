@@ -1,17 +1,25 @@
 {
   "name": "sr-pg-backend",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "SR PG Management System Backend API",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "seed:admin": "node scripts/seedAdmin.js",
+    "start": "node server.js",
     "dev": "nodemon server.js",
-    "start": "node server.js"
+    "seed:admin": "node scripts/seedAdmin.js",
+    "reset:password": "node scripts/resetAdminPassword.js",
+    "test:endpoints": "node scripts/testEndpoints.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
+  "keywords": [
+    "pg-management",
+    "express",
+    "mongodb",
+    "nodejs"
+  ],
   "author": "",
   "license": "ISC",
+  "type": "module",
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
@@ -24,6 +32,5 @@
   },
   "devDependencies": {
     "nodemon": "^3.1.14"
-  },
-  "type": "module"
+  }
 }
