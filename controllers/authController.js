@@ -8,7 +8,7 @@ import { successResponse, errorResponse } from "../utils/responseUtils.js";
  */
 export const login = async (req, res, next) => {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body || {};
 
     if (!email || !password) {
       return errorResponse(res, 400, "Email and password are required");

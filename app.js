@@ -18,16 +18,34 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
-// Security headers
-app.disable("x-powered-by");
-app.use(helmet());
+// Trust reverse proxy (Render, Heroku, AWS, Nginx)
+app.set("trust proxy", 1);
 
-// CORS configuration
+// Security headers with cross-origin allowed for client app
+app.disable("x-powered-by");
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
+
+// CORS configuration - directly handled in app.js without needing .env
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    origin: (origin, callback) => {
+      // Directly allow requests from any origin (Netlify https://sr-pg.netlify.app, localhost, etc.)
+      callback(null, true);
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+      "Accept",
+      "Origin",
+    ],
+    optionsSuccessStatus: 200,
   })
 );
 
@@ -46,6 +64,7 @@ app.use(
     limit: 300,
     standardHeaders: "draft-7",
     legacyHeaders: false,
+    validate: { xForwardedForHeader: false },
   })
 );
 
