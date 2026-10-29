@@ -3,6 +3,7 @@ import Tenant from "../models/Tenant.js";
 import Room from "../models/Room.js";
 import Bed from "../models/Bed.js";
 import Floor from "../models/Floor.js";
+import Flat from "../models/Flat.js";
 import RentPayment from "../models/RentPayment.js";
 import {
   getCurrentMonthString,
@@ -237,6 +238,7 @@ export const getTenants = async (req, res, next) => {
 export const getFilterOptions = async (req, res, next) => {
   try {
     const floors = await Floor.find().sort({ floorNumber: 1 });
+    const flats = await Flat.find().sort({ flatNumber: 1 });
     const rooms = await Room.find().sort({ roomNumber: 1 });
     const beds = await Bed.find().sort({ bedNumber: 1 });
 
@@ -245,10 +247,17 @@ export const getFilterOptions = async (req, res, next) => {
         id: f._id.toString(),
         name: f.name,
       })),
+      flats: flats.map((fl) => ({
+        id: fl._id.toString(),
+        flatNumber: fl.flatNumber,
+        name: fl.name || fl.flatNumber,
+        floorId: fl.floorId.toString(),
+      })),
       rooms: rooms.map((r) => ({
         id: r._id.toString(),
         roomNumber: r.roomNumber,
         floorId: r.floorId.toString(),
+        flatId: r.flatId ? r.flatId.toString() : null,
       })),
       beds: beds.map((b) => ({
         id: b._id.toString(),

@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import Floor from "../models/Floor.js";
+import Flat from "../models/Flat.js";
 import Room from "../models/Room.js";
 import Bed from "../models/Bed.js";
 import Tenant from "../models/Tenant.js";
@@ -7,20 +8,21 @@ import { successResponse, errorResponse } from "../utils/responseUtils.js";
 
 /**
  * POST /api/management/create
- * Creates floor, room, bed, or tenant
+ * Creates floor, flat, room, bed, or tenant
  */
 export const createResource = async (req, res, next) => {
   try {
     const { type } = req.body;
 
-    if (!type || !["floor", "room", "bed", "tenant"].includes(type)) {
+    if (!type || !["floor", "flat", "room", "bed", "tenant"].includes(type)) {
       return errorResponse(
         res,
         400,
-        "Invalid type. Allowed values: floor, room, bed, tenant"
+        "Invalid type. Allowed values: floor, flat, room, bed, tenant"
       );
     }
 
+    // 1. FLOOR
     if (type === "floor") {
       const { name, floorNumber, description } = req.body;
 
@@ -53,24 +55,87 @@ export const createResource = async (req, res, next) => {
       });
     }
 
-    if (type === "room") {
-      const { floorId, roomNumber, capacity, description } = req.body;
+    // 2. FLAT
+    if (type === "flat") {
+      const { floorId, flatNumber, name, description } = req.body;
 
-      if (!floorId || !roomNumber || capacity === undefined || capacity === null || isNaN(Number(capacity))) {
-        return errorResponse(res, 400, "Required fields are missing");
+      if (!floorId || !flatNumber) {
+        return errorResponse(res, 400, "Floor ID and Flat Number are required");
       }
 
       if (!mongoose.Types.ObjectId.isValid(floorId)) {
-        return errorResponse(res, 404, "Referenced floor or room not found");
+        return errorResponse(res, 404, "Referenced floor not found");
       }
 
       const floor = await Floor.findById(floorId);
       if (!floor) {
-        return errorResponse(res, 404, "Referenced floor or room not found");
+        return errorResponse(res, 404, "Referenced floor not found");
+      }
+
+      const existingFlat = await Flat.findOne({
+        floorId,
+        flatNumber: String(flatNumber).trim(),
+      });
+      if (existingFlat) {
+        return errorResponse(res, 409, "A flat with this number already exists on this floor");
+      }
+
+      const flat = await Flat.create({
+        floorId,
+        flatNumber: String(flatNumber).trim(),
+        name: name ? String(name).trim() : String(flatNumber).trim(),
+        description: description ? description.trim() : "",
+      });
+
+      return res.status(201).json({
+        status: "success",
+        message: "Flat created successfully",
+        data: {
+          id: flat._id.toString(),
+          type: "flat",
+          floorId: flat.floorId.toString(),
+          flatNumber: flat.flatNumber,
+          name: flat.name,
+          description: flat.description,
+          createdAt: flat.createdAt,
+        },
+      });
+    }
+
+    // 3. ROOM
+    if (type === "room") {
+      const { floorId, flatId, roomNumber, capacity, description } = req.body;
+
+      let effectiveFloorId = floorId;
+
+      if (flatId) {
+        if (!mongoose.Types.ObjectId.isValid(flatId)) {
+          return errorResponse(res, 404, "Referenced flat not found");
+        }
+        const flat = await Flat.findById(flatId);
+        if (!flat) {
+          return errorResponse(res, 404, "Referenced flat not found");
+        }
+        if (!effectiveFloorId) {
+          effectiveFloorId = flat.floorId;
+        }
+      }
+
+      if (!effectiveFloorId || !roomNumber || capacity === undefined || capacity === null || isNaN(Number(capacity))) {
+        return errorResponse(res, 400, "Required fields are missing");
+      }
+
+      if (!mongoose.Types.ObjectId.isValid(effectiveFloorId)) {
+        return errorResponse(res, 404, "Referenced floor or flat not found");
+      }
+
+      const floor = await Floor.findById(effectiveFloorId);
+      if (!floor) {
+        return errorResponse(res, 404, "Referenced floor or flat not found");
       }
 
       const existingRoom = await Room.findOne({
-        floorId,
+        floorId: effectiveFloorId,
         roomNumber: String(roomNumber).trim(),
       });
       if (existingRoom) {
@@ -78,7 +143,8 @@ export const createResource = async (req, res, next) => {
       }
 
       const room = await Room.create({
-        floorId,
+        floorId: effectiveFloorId,
+        flatId: flatId ? new mongoose.Types.ObjectId(flatId) : null,
         roomNumber: String(roomNumber).trim(),
         capacity: Number(capacity),
         description: description ? description.trim() : "",
@@ -91,6 +157,7 @@ export const createResource = async (req, res, next) => {
           id: room._id.toString(),
           type: "room",
           floorId: room.floorId.toString(),
+          flatId: room.flatId ? room.flatId.toString() : null,
           roomNumber: room.roomNumber,
           capacity: room.capacity,
           description: room.description,
@@ -99,6 +166,7 @@ export const createResource = async (req, res, next) => {
       });
     }
 
+    // 4. BED
     if (type === "bed") {
       const { roomId, bedNumber, bedType, monthlyRent, status } = req.body;
 
@@ -107,12 +175,12 @@ export const createResource = async (req, res, next) => {
       }
 
       if (!mongoose.Types.ObjectId.isValid(roomId)) {
-        return errorResponse(res, 404, "Referenced floor or room not found");
+        return errorResponse(res, 404, "Referenced room not found");
       }
 
       const room = await Room.findById(roomId);
       if (!room) {
-        return errorResponse(res, 404, "Referenced floor or room not found");
+        return errorResponse(res, 404, "Referenced room not found");
       }
 
       const existingBed = await Bed.findOne({
@@ -156,6 +224,7 @@ export const createResource = async (req, res, next) => {
       });
     }
 
+    // 5. TENANT
     if (type === "tenant") {
       const {
         fullName,
@@ -264,25 +333,27 @@ export const createResource = async (req, res, next) => {
 };
 
 /**
- * GET /api/management?type=floor|room|bed
+ * GET /api/management?type=floor|flat|room|bed
  */
 export const getResources = async (req, res, next) => {
   try {
     const type = req.query.type || "floor";
 
-    if (!["floor", "room", "bed"].includes(type)) {
+    if (!["floor", "flat", "room", "bed"].includes(type)) {
       return errorResponse(
         res,
         400,
-        "Invalid type. Allowed values: floor, room, bed"
+        "Invalid type. Allowed values: floor, flat, room, bed"
       );
     }
 
+    // 1. FLOORS
     if (type === "floor") {
       const floors = await Floor.find().sort({ floorNumber: 1 });
 
       const items = await Promise.all(
         floors.map(async (f) => {
+          const flatCount = await Flat.countDocuments({ floorId: f._id });
           const roomCount = await Room.countDocuments({ floorId: f._id });
           const rooms = await Room.find({ floorId: f._id }).select("_id");
           const roomIds = rooms.map((r) => r._id);
@@ -293,6 +364,7 @@ export const getResources = async (req, res, next) => {
             name: f.name,
             floorNumber: f.floorNumber,
             description: f.description,
+            flatCount,
             roomCount,
             bedCount,
             createdAt: f.createdAt,
@@ -307,10 +379,64 @@ export const getResources = async (req, res, next) => {
       });
     }
 
-    if (type === "room") {
+    // 2. FLATS
+    if (type === "flat") {
       const { floorId } = req.query;
       const filter = {};
       if (floorId) {
+        if (!mongoose.Types.ObjectId.isValid(floorId)) {
+          return successResponse(res, 200, "Flats retrieved successfully", {
+            type: "flat",
+            count: 0,
+            items: [],
+          });
+        }
+        filter.floorId = floorId;
+      }
+
+      const flats = await Flat.find(filter).sort({ flatNumber: 1 });
+
+      const items = await Promise.all(
+        flats.map(async (f) => {
+          const roomCount = await Room.countDocuments({ flatId: f._id });
+          const rooms = await Room.find({ flatId: f._id }).select("_id");
+          const roomIds = rooms.map((r) => r._id);
+          const bedCount = await Bed.countDocuments({ roomId: { $in: roomIds } });
+
+          return {
+            id: f._id.toString(),
+            floorId: f.floorId.toString(),
+            flatNumber: f.flatNumber,
+            name: f.name || f.flatNumber,
+            description: f.description,
+            roomCount,
+            bedCount,
+            createdAt: f.createdAt,
+          };
+        })
+      );
+
+      return successResponse(res, 200, "Flats retrieved successfully", {
+        type: "flat",
+        count: items.length,
+        items,
+      });
+    }
+
+    // 3. ROOMS
+    if (type === "room") {
+      const { floorId, flatId } = req.query;
+      const filter = {};
+      if (flatId) {
+        if (!mongoose.Types.ObjectId.isValid(flatId)) {
+          return successResponse(res, 200, "Rooms retrieved successfully", {
+            type: "room",
+            count: 0,
+            items: [],
+          });
+        }
+        filter.flatId = flatId;
+      } else if (floorId) {
         if (!mongoose.Types.ObjectId.isValid(floorId)) {
           return successResponse(res, 200, "Rooms retrieved successfully", {
             type: "room",
@@ -322,6 +448,13 @@ export const getResources = async (req, res, next) => {
       }
 
       const rooms = await Room.find(filter).sort({ roomNumber: 1 });
+
+      // Cache flats for lookup
+      const flats = await Flat.find().select("_id flatNumber name");
+      const flatMap = {};
+      flats.forEach((fl) => {
+        flatMap[fl._id.toString()] = fl.flatNumber || fl.name;
+      });
 
       const items = await Promise.all(
         rooms.map(async (r) => {
@@ -335,9 +468,14 @@ export const getResources = async (req, res, next) => {
             status: "Available",
           });
 
+          const flatIdStr = r.flatId ? r.flatId.toString() : null;
+          const flatNumber = flatIdStr ? flatMap[flatIdStr] || "" : "";
+
           return {
             id: r._id.toString(),
             floorId: r.floorId.toString(),
+            flatId: flatIdStr,
+            flatNumber,
             roomNumber: r.roomNumber,
             capacity: r.capacity,
             bedCount,
@@ -356,8 +494,9 @@ export const getResources = async (req, res, next) => {
       });
     }
 
+    // 4. BEDS
     if (type === "bed") {
-      const { roomId, floorId } = req.query;
+      const { roomId, floorId, flatId } = req.query;
       const filter = {};
 
       if (roomId) {
@@ -369,6 +508,16 @@ export const getResources = async (req, res, next) => {
           });
         }
         filter.roomId = roomId;
+      } else if (flatId) {
+        if (!mongoose.Types.ObjectId.isValid(flatId)) {
+          return successResponse(res, 200, "Beds retrieved successfully", {
+            type: "bed",
+            count: 0,
+            items: [],
+          });
+        }
+        const rooms = await Room.find({ flatId }).select("_id");
+        filter.roomId = { $in: rooms.map((r) => r._id) };
       } else if (floorId) {
         if (!mongoose.Types.ObjectId.isValid(floorId)) {
           return successResponse(res, 200, "Beds retrieved successfully", {
@@ -406,7 +555,7 @@ export const getResources = async (req, res, next) => {
 };
 
 /**
- * PUT /api/management/:id?type=floor|room|bed
+ * PUT /api/management/:id?type=floor|flat|room|bed
  */
 export const updateResource = async (req, res, next) => {
   try {
@@ -414,17 +563,18 @@ export const updateResource = async (req, res, next) => {
     const { type } = req.query;
 
     if (!id || !mongoose.Types.ObjectId.isValid(id)) {
-      return errorResponse(res, 404, "Floor, room, or bed not found");
+      return errorResponse(res, 404, "Resource not found");
     }
 
-    if (!type || !["floor", "room", "bed"].includes(type)) {
+    if (!type || !["floor", "flat", "room", "bed"].includes(type)) {
       return errorResponse(res, 400, "Invalid request data");
     }
 
+    // 1. FLOOR
     if (type === "floor") {
       const floor = await Floor.findById(id);
       if (!floor) {
-        return errorResponse(res, 404, "Floor, room, or bed not found");
+        return errorResponse(res, 404, "Floor not found");
       }
 
       const { name, floorNumber, description } = req.body;
@@ -458,13 +608,14 @@ export const updateResource = async (req, res, next) => {
       });
     }
 
-    if (type === "room") {
-      const room = await Room.findById(id);
-      if (!room) {
-        return errorResponse(res, 404, "Floor, room, or bed not found");
+    // 2. FLAT
+    if (type === "flat") {
+      const flat = await Flat.findById(id);
+      if (!flat) {
+        return errorResponse(res, 404, "Flat not found");
       }
 
-      const { floorId, roomNumber, capacity, description } = req.body;
+      const { floorId, flatNumber, name, description } = req.body;
 
       if (floorId !== undefined) {
         if (!mongoose.Types.ObjectId.isValid(floorId)) {
@@ -472,7 +623,71 @@ export const updateResource = async (req, res, next) => {
         }
         const floor = await Floor.findById(floorId);
         if (!floor) {
-          return errorResponse(res, 404, "Floor, room, or bed not found");
+          return errorResponse(res, 404, "Floor not found");
+        }
+        flat.floorId = floorId;
+      }
+
+      if (flatNumber !== undefined) {
+        const fNum = String(flatNumber).trim();
+        const existing = await Flat.findOne({
+          floorId: flat.floorId,
+          flatNumber: fNum,
+          _id: { $ne: flat._id },
+        });
+        if (existing) {
+          return errorResponse(res, 409, "A flat with this number already exists on this floor");
+        }
+        flat.flatNumber = fNum;
+      }
+
+      if (name !== undefined) flat.name = name.trim();
+      if (description !== undefined) flat.description = description.trim();
+
+      await flat.save();
+
+      return successResponse(res, 200, "Flat updated successfully", {
+        id: flat._id.toString(),
+        floorId: flat.floorId.toString(),
+        flatNumber: flat.flatNumber,
+        name: flat.name,
+        description: flat.description,
+        updatedAt: flat.updatedAt,
+      });
+    }
+
+    // 3. ROOM
+    if (type === "room") {
+      const room = await Room.findById(id);
+      if (!room) {
+        return errorResponse(res, 404, "Room not found");
+      }
+
+      const { floorId, flatId, roomNumber, capacity, description } = req.body;
+
+      if (flatId !== undefined) {
+        if (flatId === null || flatId === "") {
+          room.flatId = null;
+        } else {
+          if (!mongoose.Types.ObjectId.isValid(flatId)) {
+            return errorResponse(res, 400, "Invalid request data");
+          }
+          const flat = await Flat.findById(flatId);
+          if (!flat) {
+            return errorResponse(res, 404, "Referenced flat not found");
+          }
+          room.flatId = flat._id;
+          room.floorId = flat.floorId;
+        }
+      }
+
+      if (floorId !== undefined && flatId === undefined) {
+        if (!mongoose.Types.ObjectId.isValid(floorId)) {
+          return errorResponse(res, 400, "Invalid request data");
+        }
+        const floor = await Floor.findById(floorId);
+        if (!floor) {
+          return errorResponse(res, 404, "Floor not found");
         }
         room.floorId = floorId;
       }
@@ -509,6 +724,7 @@ export const updateResource = async (req, res, next) => {
       return successResponse(res, 200, "Room updated successfully", {
         id: room._id.toString(),
         floorId: room.floorId.toString(),
+        flatId: room.flatId ? room.flatId.toString() : null,
         roomNumber: room.roomNumber,
         capacity: room.capacity,
         description: room.description,
@@ -516,10 +732,11 @@ export const updateResource = async (req, res, next) => {
       });
     }
 
+    // 4. BED
     if (type === "bed") {
       const bed = await Bed.findById(id);
       if (!bed) {
-        return errorResponse(res, 404, "Floor, room, or bed not found");
+        return errorResponse(res, 404, "Bed not found");
       }
 
       const { roomId, bedNumber, bedType, monthlyRent, status } = req.body;
@@ -530,7 +747,7 @@ export const updateResource = async (req, res, next) => {
         }
         const room = await Room.findById(roomId);
         if (!room) {
-          return errorResponse(res, 404, "Floor, room, or bed not found");
+          return errorResponse(res, 404, "Room not found");
         }
         bed.roomId = roomId;
       }
@@ -578,7 +795,7 @@ export const updateResource = async (req, res, next) => {
 };
 
 /**
- * DELETE /api/management/:id?type=floor|room|bed
+ * DELETE /api/management/:id?type=floor|flat|room|bed
  */
 export const deleteResource = async (req, res, next) => {
   try {
@@ -589,14 +806,15 @@ export const deleteResource = async (req, res, next) => {
       return errorResponse(res, 404, "Resource not found");
     }
 
-    if (!type || !["floor", "room", "bed"].includes(type)) {
+    if (!type || !["floor", "flat", "room", "bed"].includes(type)) {
       return errorResponse(
         res,
         400,
-        "Invalid type. Allowed values: floor, room, bed"
+        "Invalid type. Allowed values: floor, flat, room, bed"
       );
     }
 
+    // 1. FLOOR
     if (type === "floor") {
       const floor = await Floor.findById(id);
       if (!floor) {
@@ -604,7 +822,8 @@ export const deleteResource = async (req, res, next) => {
       }
 
       const hasRooms = await Room.exists({ floorId: floor._id });
-      if (hasRooms) {
+      const hasFlats = await Flat.exists({ floorId: floor._id });
+      if (hasRooms || hasFlats) {
         return errorResponse(
           res,
           409,
@@ -620,6 +839,31 @@ export const deleteResource = async (req, res, next) => {
       });
     }
 
+    // 2. FLAT
+    if (type === "flat") {
+      const flat = await Flat.findById(id);
+      if (!flat) {
+        return errorResponse(res, 404, "Resource not found");
+      }
+
+      const hasRooms = await Room.exists({ flatId: flat._id });
+      if (hasRooms) {
+        return errorResponse(
+          res,
+          409,
+          "Cannot delete this resource because it contains linked records"
+        );
+      }
+
+      await Flat.findByIdAndDelete(id);
+
+      return successResponse(res, 200, "Flat deleted successfully", {
+        id,
+        type: "flat",
+      });
+    }
+
+    // 3. ROOM
     if (type === "room") {
       const room = await Room.findById(id);
       if (!room) {
@@ -643,6 +887,7 @@ export const deleteResource = async (req, res, next) => {
       });
     }
 
+    // 4. BED
     if (type === "bed") {
       const bed = await Bed.findById(id);
       if (!bed) {

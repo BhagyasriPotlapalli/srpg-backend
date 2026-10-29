@@ -8,6 +8,12 @@ const roomSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    flatId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Flat",
+      default: null,
+      index: true,
+    },
     roomNumber: {
       type: String,
       required: true,
