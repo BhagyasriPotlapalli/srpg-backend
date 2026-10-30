@@ -10,6 +10,8 @@ import {
   getTodayDateString,
   calculateRentDueDate,
   computeRentStatus,
+  getDaysDifference,
+  addDaysToDateString,
 } from "../utils/dateUtils.js";
 import { successResponse, errorResponse } from "../utils/responseUtils.js";
 
@@ -24,6 +26,7 @@ export const getTenants = async (req, res, next) => {
       floorId,
       bedId,
       tenantStatus,
+      stayType,
       rentStatus,
       joiningDateFrom,
       joiningDateTo,
@@ -45,6 +48,10 @@ export const getTenants = async (req, res, next) => {
 
     if (tenantStatus && ["Active", "CheckedOut"].includes(tenantStatus)) {
       query.tenantStatus = tenantStatus;
+    }
+
+    if (stayType && ["Monthly", "Daily"].includes(stayType)) {
+      query.stayType = stayType;
     }
 
     if (bedId && mongoose.Types.ObjectId.isValid(bedId)) {
@@ -178,6 +185,12 @@ export const getTenants = async (req, res, next) => {
         monthlyRent: t.monthlyRent,
         securityDeposit: t.securityDeposit || 0,
         tenantStatus: t.tenantStatus,
+        stayType: t.stayType || "Monthly",
+        dailyRate: t.dailyRate || 0,
+        stayDurationDays: t.stayDurationDays || null,
+        expectedCheckoutDate: t.expectedCheckoutDate || null,
+        emergencyContact: t.emergencyContact || "",
+        notes: t.notes || "",
         rent: {
           currentMonth: month,
           rentAmount,
@@ -265,6 +278,7 @@ export const getFilterOptions = async (req, res, next) => {
         roomId: b.roomId.toString(),
       })),
       tenantStatuses: ["Active", "CheckedOut"],
+      stayTypes: ["Monthly", "Daily"],
       rentStatuses: [
         "Paid",
         "DueToday",
@@ -310,6 +324,10 @@ export const updateTenant = async (req, res, next) => {
       emergencyContact,
       notes,
       tenantStatus,
+      stayType,
+      dailyRate,
+      stayDurationDays,
+      expectedCheckoutDate,
     } = req.body;
 
     // Validate phone uniqueness for active tenants
@@ -418,6 +436,12 @@ export const updateTenant = async (req, res, next) => {
     if (securityDeposit !== undefined) tenant.securityDeposit = Number(securityDeposit);
     if (emergencyContact !== undefined) tenant.emergencyContact = emergencyContact.trim();
     if (notes !== undefined) tenant.notes = notes.trim();
+    if (stayType !== undefined) tenant.stayType = stayType;
+    if (dailyRate !== undefined) tenant.dailyRate = Number(dailyRate);
+    if (stayDurationDays !== undefined)
+      tenant.stayDurationDays = stayDurationDays ? Number(stayDurationDays) : null;
+    if (expectedCheckoutDate !== undefined)
+      tenant.expectedCheckoutDate = expectedCheckoutDate || null;
 
     await tenant.save();
 
@@ -436,6 +460,10 @@ export const updateTenant = async (req, res, next) => {
       emergencyContact: tenant.emergencyContact,
       notes: tenant.notes,
       tenantStatus: tenant.tenantStatus,
+      stayType: tenant.stayType,
+      dailyRate: tenant.dailyRate,
+      stayDurationDays: tenant.stayDurationDays,
+      expectedCheckoutDate: tenant.expectedCheckoutDate,
       updatedAt: tenant.updatedAt,
     });
   } catch (error) {
@@ -452,19 +480,116 @@ export const deleteTenant = async (req, res, next) => {
     const { id } = req.params;
     const tenant = await Tenant.findById(id);
     if (!tenant) {
-      return errorResponse(res, 404, 'Tenant not found');
+      return errorResponse(res, 404, "Tenant not found");
     }
 
     if (tenant.bedId) {
       await Bed.findByIdAndUpdate(tenant.bedId, {
-        status: 'Available',
+        status: "Available",
         tenantId: null,
       });
     }
 
     await Tenant.findByIdAndDelete(id);
 
-    return successResponse(res, 200, 'Tenant deleted successfully', { id });
+    return successResponse(res, 200, "Tenant deleted successfully", { id });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * GET /api/tenants/vacate-reminders
+ * Retrieve active tenants scheduled to vacate (daily stayers or scheduled vacates)
+ */
+export const getVacateReminders = async (req, res, next) => {
+  try {
+    const today = getTodayDateString();
+    const tenants = await Tenant.find({
+      tenantStatus: "Active",
+      $or: [
+        { expectedCheckoutDate: { $ne: null } },
+        { stayType: "Daily" },
+      ],
+    })
+      .populate({
+        path: "roomId",
+        select: "roomNumber floorId",
+        populate: {
+          path: "floorId",
+          select: "name floorNumber",
+        },
+      })
+      .populate("bedId", "bedNumber")
+      .lean();
+
+    const reminders = tenants.map((t) => {
+      const room = t.roomId;
+      const floor = room?.floorId;
+      const bed = t.bedId;
+
+      let expectedDate = t.expectedCheckoutDate;
+      if (!expectedDate && t.stayType === "Daily" && t.joiningDate && t.stayDurationDays) {
+        expectedDate = addDaysToDateString(t.joiningDate, t.stayDurationDays);
+      }
+
+      const daysLeft = expectedDate ? getDaysDifference(expectedDate, today) : null;
+
+      let status = "Upcoming";
+      if (daysLeft !== null) {
+        if (daysLeft < 0) status = "Overdue";
+        else if (daysLeft === 0) status = "Today";
+        else if (daysLeft === 1) status = "Tomorrow";
+        else status = "Upcoming";
+      }
+
+      return {
+        id: t._id.toString(),
+        fullName: t.fullName,
+        phone: t.phone,
+        email: t.email || "",
+        room: room
+          ? {
+              id: room._id.toString(),
+              roomNumber: room.roomNumber,
+            }
+          : null,
+        floor: floor
+          ? {
+              id: floor._id.toString(),
+              name: floor.name,
+              floorNumber: floor.floorNumber,
+            }
+          : null,
+        bed: bed
+          ? {
+              id: bed._id.toString(),
+              bedNumber: bed.bedNumber,
+            }
+          : null,
+        stayType: t.stayType || "Monthly",
+        dailyRate: t.dailyRate || 0,
+        stayDurationDays: t.stayDurationDays || null,
+        joiningDate: t.joiningDate,
+        expectedCheckoutDate: expectedDate || null,
+        daysLeft,
+        status,
+        monthlyRent: t.monthlyRent || 0,
+        notes: t.notes || "",
+      };
+    });
+
+    const orderPriority = { Overdue: 0, Today: 1, Tomorrow: 2, Upcoming: 3 };
+    reminders.sort((a, b) => {
+      const pDiff = (orderPriority[a.status] ?? 4) - (orderPriority[b.status] ?? 4);
+      if (pDiff !== 0) return pDiff;
+      return (a.daysLeft ?? 9999) - (b.daysLeft ?? 9999);
+    });
+
+    return successResponse(res, 200, "Vacate reminders retrieved successfully", {
+      count: reminders.length,
+      reminders,
+    });
   } catch (error) {
     next(error);
   }

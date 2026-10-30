@@ -20,6 +20,46 @@ export const getCurrentMonthString = () => {
 };
 
 /**
+ * Add days to a date string formatted as YYYY-MM-DD
+ * @param {string} dateStr - "YYYY-MM-DD"
+ * @param {number} days
+ */
+export const addDaysToDateString = (dateStr, days) => {
+  if (!dateStr) return null;
+  const parts = dateStr.split("-");
+  if (parts.length !== 3) return null;
+  const year = parseInt(parts[0], 10);
+  const monthIndex = parseInt(parts[1], 10) - 1;
+  const day = parseInt(parts[2], 10);
+
+  const d = new Date(year, monthIndex, day);
+  d.setDate(d.getDate() + Number(days));
+
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dt = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dt}`;
+};
+
+/**
+ * Calculate difference in days between target date and base date
+ * Returns positive if target is in the future, 0 if today, negative if past
+ * @param {string} targetDateStr - "YYYY-MM-DD"
+ * @param {string} baseDateStr - "YYYY-MM-DD" default today
+ */
+export const getDaysDifference = (targetDateStr, baseDateStr = getTodayDateString()) => {
+  if (!targetDateStr) return null;
+  const parse = (str) => {
+    const parts = str.split("-");
+    return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+  };
+  const d1 = parse(targetDateStr);
+  const d2 = parse(baseDateStr);
+  const diffTime = d1.getTime() - d2.getTime();
+  return Math.round(diffTime / (1000 * 60 * 60 * 24));
+};
+
+/**
  * Calculate the rent due date for a given tenant and month
  * @param {string} month - "YYYY-MM"
  * @param {object} tenant - tenant object with joiningDate, rentDueDay

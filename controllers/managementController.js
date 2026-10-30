@@ -5,6 +5,7 @@ import Room from "../models/Room.js";
 import Bed from "../models/Bed.js";
 import Tenant from "../models/Tenant.js";
 import { successResponse, errorResponse } from "../utils/responseUtils.js";
+import { addDaysToDateString } from "../utils/dateUtils.js";
 
 /**
  * POST /api/management/create
@@ -238,7 +239,20 @@ export const createResource = async (req, res, next) => {
         securityDeposit,
         emergencyContact,
         notes,
+        stayType = "Monthly",
+        dailyRate,
+        stayDurationDays,
+        expectedCheckoutDate,
       } = req.body;
+
+      const isDailyStay = stayType === "Daily";
+      const parsedDays = isDailyStay ? Number(stayDurationDays) : null;
+      const parsedDailyRate = isDailyStay ? Number(dailyRate || 0) : 0;
+
+      let effectiveRent = Number(monthlyRent);
+      if (isDailyStay && (isNaN(effectiveRent) || effectiveRent <= 0)) {
+        effectiveRent = parsedDailyRate * (parsedDays || 1);
+      }
 
       if (
         !fullName ||
@@ -246,13 +260,21 @@ export const createResource = async (req, res, next) => {
         !roomId ||
         !bedId ||
         !joiningDate ||
-        monthlyRent === undefined ||
-        monthlyRent === null
+        isNaN(effectiveRent) ||
+        effectiveRent < 0
       ) {
         return errorResponse(
           res,
           400,
-          "Full name, phone, room ID, bed ID, joining date, and monthly rent are required"
+          "Full name, phone, room ID, bed ID, joining date, and rent amount are required"
+        );
+      }
+
+      if (isDailyStay && (!parsedDays || parsedDays < 1)) {
+        return errorResponse(
+          res,
+          400,
+          "Valid stay duration in days (at least 1 day) is required for daily stay"
         );
       }
 
@@ -286,6 +308,12 @@ export const createResource = async (req, res, next) => {
         );
       }
 
+      // Compute expected checkout / vacate date if daily stay or explicitly provided
+      let finalExpectedCheckoutDate = expectedCheckoutDate || null;
+      if (isDailyStay && !finalExpectedCheckoutDate && joiningDate && parsedDays) {
+        finalExpectedCheckoutDate = addDaysToDateString(joiningDate, parsedDays);
+      }
+
       const tenant = await Tenant.create({
         fullName: fullName.trim(),
         phone: String(phone).trim(),
@@ -294,10 +322,17 @@ export const createResource = async (req, res, next) => {
         roomId: room._id,
         bedId: bed._id,
         joiningDate,
-        monthlyRent: Number(monthlyRent),
-        securityDeposit: securityDeposit !== undefined ? Number(securityDeposit) : 0,
+        monthlyRent: effectiveRent,
+        securityDeposit:
+          securityDeposit !== undefined && securityDeposit !== ""
+            ? Number(securityDeposit)
+            : 0,
         emergencyContact: emergencyContact ? emergencyContact.trim() : "",
         notes: notes ? notes.trim() : "",
+        stayType: isDailyStay ? "Daily" : "Monthly",
+        dailyRate: parsedDailyRate,
+        stayDurationDays: parsedDays,
+        expectedCheckoutDate: finalExpectedCheckoutDate,
         tenantStatus: "Active",
       });
 
@@ -322,6 +357,10 @@ export const createResource = async (req, res, next) => {
           securityDeposit: tenant.securityDeposit,
           emergencyContact: tenant.emergencyContact,
           notes: tenant.notes,
+          stayType: tenant.stayType,
+          dailyRate: tenant.dailyRate,
+          stayDurationDays: tenant.stayDurationDays,
+          expectedCheckoutDate: tenant.expectedCheckoutDate,
           status: tenant.tenantStatus,
           createdAt: tenant.createdAt,
         },

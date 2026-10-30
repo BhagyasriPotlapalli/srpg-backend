@@ -63,6 +63,27 @@ const tenantSchema = new mongoose.Schema(
       default: "",
       trim: true,
     },
+    stayType: {
+      type: String,
+      enum: ["Monthly", "Daily"],
+      default: "Monthly",
+      index: true,
+    },
+    dailyRate: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    stayDurationDays: {
+      type: Number,
+      default: null,
+      min: 1,
+    },
+    expectedCheckoutDate: {
+      type: String,
+      default: null,
+      index: true,
+    },
     tenantStatus: {
       type: String,
       enum: ["Active", "CheckedOut"],
