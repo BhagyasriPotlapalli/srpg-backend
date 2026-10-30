@@ -14,6 +14,8 @@ router.use(authenticateAdmin);
 router.post("/create", createResource);
 router.get("/", getResources);
 router.put("/:id", updateResource);
+router.put("/", updateResource);
 router.delete("/:id", deleteResource);
+router.delete("/", deleteResource);
 
 export default router;

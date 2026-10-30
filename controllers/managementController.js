@@ -169,9 +169,10 @@ export const createResource = async (req, res, next) => {
 
     // 4. BED
     if (type === "bed") {
+      const count = Math.max(1, Number(req.body.count) || 1);
       const { roomId, bedNumber, bedType, monthlyRent, status } = req.body;
 
-      if (!roomId || !bedNumber || monthlyRent === undefined || monthlyRent === null || isNaN(Number(monthlyRent))) {
+      if (!roomId || monthlyRent === undefined || monthlyRent === null || isNaN(Number(monthlyRent))) {
         return errorResponse(res, 400, "Required fields are missing");
       }
 
@@ -184,44 +185,74 @@ export const createResource = async (req, res, next) => {
         return errorResponse(res, 404, "Referenced room not found");
       }
 
-      const existingBed = await Bed.findOne({
-        roomId,
-        bedNumber: String(bedNumber).trim(),
-      });
-      if (existingBed) {
-        return errorResponse(res, 409, "A resource with these details already exists");
-      }
-
-      const bedCount = await Bed.countDocuments({ roomId });
-      if (bedCount >= room.capacity) {
+      const existingBeds = await Bed.find({ roomId });
+      if (existingBeds.length + count > room.capacity) {
         return errorResponse(
           res,
           409,
-          "Room capacity reached. Cannot add more beds."
+          `Room capacity reached. Current beds: ${existingBeds.length}, Capacity: ${room.capacity}. Cannot add ${count} more.`
         );
       }
 
-      const bed = await Bed.create({
-        roomId,
-        bedNumber: String(bedNumber).trim(),
-        bedType: bedType ? bedType.trim() : "Single",
-        monthlyRent: Number(monthlyRent),
-        status: status && ["Available", "Occupied"].includes(status) ? status : "Available",
-      });
+      const existingNumbers = new Set(
+        existingBeds.map((b) => (b.bedNumber ? b.bedNumber.trim().toLowerCase() : ""))
+      );
+
+      const bedsToCreate = [];
+      if (count > 1 || !bedNumber || !String(bedNumber).trim()) {
+        let num = 1;
+        while (bedsToCreate.length < count) {
+          const candidateNumber = `Bed ${num}`;
+          if (!existingNumbers.has(candidateNumber.toLowerCase())) {
+            bedsToCreate.push({
+              roomId,
+              bedNumber: candidateNumber,
+              bedType: bedType ? bedType.trim() : "Single",
+              monthlyRent: Number(monthlyRent),
+              status: status && ["Available", "Occupied"].includes(status) ? status : "Available",
+            });
+            existingNumbers.add(candidateNumber.toLowerCase());
+          }
+          num++;
+        }
+      } else {
+        const trimmedNumber = String(bedNumber).trim();
+        if (existingNumbers.has(trimmedNumber.toLowerCase())) {
+          return errorResponse(res, 409, "A resource with these details already exists");
+        }
+        bedsToCreate.push({
+          roomId,
+          bedNumber: trimmedNumber,
+          bedType: bedType ? bedType.trim() : "Single",
+          monthlyRent: Number(monthlyRent),
+          status: status && ["Available", "Occupied"].includes(status) ? status : "Available",
+        });
+      }
+
+      const createdBeds = await Bed.insertMany(bedsToCreate);
 
       return res.status(201).json({
         status: "success",
-        message: "Bed created successfully",
-        data: {
-          id: bed._id.toString(),
+        message: `${createdBeds.length} bed(s) created successfully`,
+        data: createdBeds.length === 1 ? {
+          id: createdBeds[0]._id.toString(),
           type: "bed",
-          roomId: bed.roomId.toString(),
-          bedNumber: bed.bedNumber,
-          bedType: bed.bedType,
-          monthlyRent: bed.monthlyRent,
-          status: bed.status,
-          createdAt: bed.createdAt,
-        },
+          roomId: createdBeds[0].roomId.toString(),
+          bedNumber: createdBeds[0].bedNumber,
+          bedType: createdBeds[0].bedType,
+          monthlyRent: createdBeds[0].monthlyRent,
+          status: createdBeds[0].status,
+          createdAt: createdBeds[0].createdAt,
+        } : createdBeds.map((b) => ({
+          id: b._id.toString(),
+          type: "bed",
+          roomId: b.roomId.toString(),
+          bedNumber: b.bedNumber,
+          bedType: b.bedType,
+          monthlyRent: b.monthlyRent,
+          status: b.status,
+          createdAt: b.createdAt,
+        })),
       });
     }
 
@@ -598,8 +629,8 @@ export const getResources = async (req, res, next) => {
  */
 export const updateResource = async (req, res, next) => {
   try {
-    const { id } = req.params;
-    const { type } = req.query;
+    const id = req.params.id || req.query.id || req.body?.id;
+    const type = req.query.type || req.body?.type;
 
     if (!id || !mongoose.Types.ObjectId.isValid(id)) {
       return errorResponse(res, 404, "Resource not found");
@@ -838,18 +869,21 @@ export const updateResource = async (req, res, next) => {
  */
 export const deleteResource = async (req, res, next) => {
   try {
-    const { id } = req.params;
-    const { type } = req.query;
+    const rawId = req.body?.id || req.params?.id || req.query?.id;
+    const rawType = req.body?.type || req.query?.type;
+
+    const id = String(rawId || "").trim();
+    const type = String(rawType || "").trim().toLowerCase();
 
     if (!id || !mongoose.Types.ObjectId.isValid(id)) {
       return errorResponse(res, 404, "Resource not found");
     }
 
-    if (!type || !["floor", "flat", "room", "bed"].includes(type)) {
+    if (!type || !["floor", "flat", "room", "bed", "tenant"].includes(type)) {
       return errorResponse(
         res,
         400,
-        "Invalid type. Allowed values: floor, flat, room, bed"
+        "Invalid type. Allowed values: floor, flat, room, bed, tenant"
       );
     }
 
@@ -860,16 +894,32 @@ export const deleteResource = async (req, res, next) => {
         return errorResponse(res, 404, "Resource not found");
       }
 
-      const hasRooms = await Room.exists({ floorId: floor._id });
-      const hasFlats = await Flat.exists({ floorId: floor._id });
-      if (hasRooms || hasFlats) {
+      const flats = await Flat.find({ floorId: floor._id });
+      const flatIds = flats.map((fl) => fl._id);
+      const rooms = await Room.find({
+        $or: [{ floorId: floor._id }, { flatId: { $in: flatIds } }],
+      });
+      const roomIds = rooms.map((r) => r._id);
+      const beds = await Bed.find({ roomId: { $in: roomIds } });
+      const bedIds = beds.map((b) => b._id);
+
+      const hasActiveTenants = await Tenant.exists({
+        bedId: { $in: bedIds },
+        tenantStatus: "Active",
+      });
+      const hasOccupiedBed = beds.some((b) => b.status === "Occupied");
+
+      if (hasActiveTenants || hasOccupiedBed) {
         return errorResponse(
           res,
           409,
-          "Cannot delete this resource because it contains linked records"
+          "Cannot delete floor because it contains active tenants. Please vacate tenants first."
         );
       }
 
+      await Bed.deleteMany({ roomId: { $in: roomIds } });
+      await Room.deleteMany({ _id: { $in: roomIds } });
+      await Flat.deleteMany({ floorId: floor._id });
       await Floor.findByIdAndDelete(id);
 
       return successResponse(res, 200, "Floor deleted successfully", {
@@ -885,15 +935,27 @@ export const deleteResource = async (req, res, next) => {
         return errorResponse(res, 404, "Resource not found");
       }
 
-      const hasRooms = await Room.exists({ flatId: flat._id });
-      if (hasRooms) {
+      const rooms = await Room.find({ flatId: flat._id });
+      const roomIds = rooms.map((r) => r._id);
+      const beds = await Bed.find({ roomId: { $in: roomIds } });
+      const bedIds = beds.map((b) => b._id);
+
+      const hasActiveTenants = await Tenant.exists({
+        bedId: { $in: bedIds },
+        tenantStatus: "Active",
+      });
+      const hasOccupiedBed = beds.some((b) => b.status === "Occupied");
+
+      if (hasActiveTenants || hasOccupiedBed) {
         return errorResponse(
           res,
           409,
-          "Cannot delete this resource because it contains linked records"
+          "Cannot delete flat because it contains active tenants. Please vacate tenants first."
         );
       }
 
+      await Bed.deleteMany({ roomId: { $in: roomIds } });
+      await Room.deleteMany({ flatId: flat._id });
       await Flat.findByIdAndDelete(id);
 
       return successResponse(res, 200, "Flat deleted successfully", {
@@ -909,15 +971,24 @@ export const deleteResource = async (req, res, next) => {
         return errorResponse(res, 404, "Resource not found");
       }
 
-      const hasBeds = await Bed.exists({ roomId: room._id });
-      if (hasBeds) {
+      const beds = await Bed.find({ roomId: room._id });
+      const bedIds = beds.map((b) => b._id);
+
+      const hasActiveTenants = await Tenant.exists({
+        bedId: { $in: bedIds },
+        tenantStatus: "Active",
+      });
+      const hasOccupiedBed = beds.some((b) => b.status === "Occupied");
+
+      if (hasActiveTenants || hasOccupiedBed) {
         return errorResponse(
           res,
           409,
-          "Cannot delete this resource because it contains linked records"
+          "Cannot delete room because it contains active tenants. Please vacate or reassign tenants first."
         );
       }
 
+      await Bed.deleteMany({ roomId: room._id });
       await Room.findByIdAndDelete(id);
 
       return successResponse(res, 200, "Room deleted successfully", {
@@ -933,23 +1004,15 @@ export const deleteResource = async (req, res, next) => {
         return errorResponse(res, 404, "Resource not found");
       }
 
-      if (bed.status === "Occupied" || bed.tenantId) {
-        return errorResponse(
-          res,
-          409,
-          "Cannot delete this resource because it contains linked records"
-        );
-      }
-
       const hasActiveTenant = await Tenant.exists({
         bedId: bed._id,
         tenantStatus: "Active",
       });
-      if (hasActiveTenant) {
+      if (hasActiveTenant || bed.status === "Occupied") {
         return errorResponse(
           res,
           409,
-          "Cannot delete this resource because it contains linked records"
+          "Cannot delete bed because it is occupied by an active tenant."
         );
       }
 
@@ -958,6 +1021,28 @@ export const deleteResource = async (req, res, next) => {
       return successResponse(res, 200, "Bed deleted successfully", {
         id,
         type: "bed",
+      });
+    }
+
+    // 5. TENANT
+    if (type === "tenant") {
+      const tenant = await Tenant.findById(id);
+      if (!tenant) {
+        return errorResponse(res, 404, "Resource not found");
+      }
+
+      if (tenant.bedId) {
+        await Bed.findByIdAndUpdate(tenant.bedId, {
+          status: "Available",
+          tenantId: null,
+        });
+      }
+
+      await Tenant.findByIdAndDelete(id);
+
+      return successResponse(res, 200, "Tenant deleted successfully", {
+        id,
+        type: "tenant",
       });
     }
   } catch (error) {
